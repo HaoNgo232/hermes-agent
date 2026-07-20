@@ -114,9 +114,10 @@ export function ModelEditSubmenu({
   const effortValue = normalizeEffort(effort)
   const thinkingOn = isThinkingEnabled(effort)
 
-  // Editing always records the model's global preset; the active model also gets
-  // it pushed onto the live session. Non-active edits stay preset-only — they do
-  // not switch you to that model.
+  // Editing always records the model's global preset (keyed by provider::model,
+  // not per-surface — a tile edit re-applies to that model everywhere); the
+  // active model also gets it pushed onto its OWN session (primary → globals,
+  // tile → its slice). Non-active edits stay preset-only — no model switch.
   const patchReasoning = async (next: string) => {
     setModelPreset(provider, model, { effort: next })
 

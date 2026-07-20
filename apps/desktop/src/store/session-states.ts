@@ -250,10 +250,11 @@ export interface SessionTile {
   /** Dock against `anchor` on adoption (default right; center = stack). */
   dir?: TileDock
   /** Pane to dock against (a drop's target zone) — default the workspace.
-   *  In-memory only: after first adoption the tree remembers placement. */
+   *  Persisted so a restart re-docks in place; a stale id falls back to the
+   *  workspace (findGroupOfPane misses → the move is skipped). */
   anchor?: string
-  /** Center docks: stack BEFORE this pane id (`null`/omitted = append) —
-   *  the strip divider's slot. In-memory, like `anchor`. */
+  /** Center docks: stack BEFORE this pane id (`null`/omitted = append) — the
+   *  strip divider's slot. Persisted, like `anchor`; a stale id appends. */
   before?: null | string
   /** Live runtime id once the tile's resume has bound one. */
   runtimeId?: string
@@ -425,17 +426,19 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
 }
 
-/** Reorder `$sessionTiles` to match layout-tree encounter order. Restore
- *  replays the array through sequential adoption (each center tile APPENDS
- *  after the ones before it), so array order IS strip order — no `before`
- *  stamping needed; a stale `before` naming an absent pane falls back to
- *  append anyway (see insertAtGroup). */
-function syncTileStripOrder() {
-  const tree = $layoutTree.get()
-  const tiles = $sessionTiles.get()
-
+/** Reorder tiles to match layout-tree encounter order (stored ids in the order
+ *  their `session-tile:` panes are walked). Restore replays the array through
+ *  sequential adoption (each center tile APPENDS after the ones before it), so
+ *  array order IS strip order — no `before` stamping needed; a stale `before`
+ *  naming an absent pane falls back to append anyway (see insertAtGroup). Tiles
+ *  not yet adopted sort after placed ones, stably. Returns `null` when nothing
+ *  moves so callers can skip a needless persist. */
+export function orderTilesByTree<T extends { storedSessionId: string }>(
+  tree: LayoutNode | null,
+  tiles: readonly T[]
+): null | T[] {
   if (!tree || tiles.length < 2) {
-    return
+    return null
   }
 
   const order: string[] = []
@@ -458,12 +461,17 @@ function syncTileStripOrder() {
 
   const rank = new Map(order.map((id, i) => [id, i]))
 
-  // Tiles not yet adopted into the tree sort after placed ones, stably.
   const next = [...tiles].sort(
     (a, b) => (rank.get(a.storedSessionId) ?? Infinity) - (rank.get(b.storedSessionId) ?? Infinity)
   )
 
-  if (next.some((t, i) => t !== tiles[i])) {
+  return next.some((t, i) => t !== tiles[i]) ? next : null
+}
+
+function syncTileStripOrder() {
+  const next = orderTilesByTree($layoutTree.get(), $sessionTiles.get())
+
+  if (next) {
     saveTiles(next)
   }
 }
@@ -626,17 +634,17 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
   runtimeId ? states[runtimeId] : undefined
 )
 
-// A PRIMARY navigation (sidebar resume, route change, new chat) moves focus
-// home to the workspace — a previously-clicked tile must not keep owning the
-// titlebar/statusbar readouts for a session switch it had no part in. It also
-// FRONTS the workspace tab: the resumed chat loads in the workspace pane, so a
-// zone parked on a tile tab must switch back or the click looks dead.
-//
-// Skip when the selected id is already an open TILE — `focusOpenSession` owns
-// that path and must not be undone by a stray selection write that would yank
-// every stacked tile behind the workspace (A+B "disappear" when switching to C).
+/** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to
+ *  the workspace — UNLESS the selected id is already an open TILE, where
+ *  `focusOpenSession` owns the move and homing would yank every stacked tile
+ *  behind the workspace (A+B "disappear" when switching to C). */
+export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
+  !(selected && tiles.some(t => t.storedSessionId === selected))
+
+// Homing also FRONTS the workspace tab: the resumed chat loads in the workspace
+// pane, so a zone parked on a tile tab must switch back or the click looks dead.
 $selectedStoredSessionId.listen(selected => {
-  if (selected && $sessionTiles.get().some(t => t.storedSessionId === selected)) {
+  if (!selectionHomesToWorkspace(selected, $sessionTiles.get())) {
     return
   }
 
