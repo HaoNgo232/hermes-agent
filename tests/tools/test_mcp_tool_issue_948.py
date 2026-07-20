@@ -260,3 +260,54 @@ def test_resolve_stdio_command_falls_back_to_nvm(tmp_path):
     # The resolved dir must be prepended so npx's shebang (`/usr/bin/env node`)
     # can find node in the same directory.
     assert env["PATH"].split(os.pathsep)[0] == str(nvm_bin)
+
+
+def _assert_resolves_to(tmp_path, node_bin, command_exe="npx"):
+    """Drive ``_resolve_stdio_command`` with ONLY ``node_bin`` present and
+    confirm the resolver falls through to it (the other candidates fail
+    isfile()/access() so the resolver must reach this one).
+    """
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    node_bin.mkdir(parents=True)
+    target = node_bin / command_exe
+    target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    target.chmod(0o755)
+
+    resolved_target = str(target)
+
+    def _fake_isfile(path):
+        return path == resolved_target
+
+    def _fake_access(path, _mode):
+        return path == resolved_target
+
+    with patch.dict("os.environ", {"HOME": str(home)}, clear=False), \
+         patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.isfile", side_effect=_fake_isfile), \
+         patch("tools.mcp_tool.os.access", side_effect=_fake_access):
+        command, env = _resolve_stdio_command(command_exe, {"PATH": "/usr/bin:/bin"})
+
+    assert command == resolved_target
+    assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def test_resolve_stdio_command_falls_back_to_fnm(tmp_path):
+    """fnm installs Node under ``~/.fnm/node-versions/<version>/installation/bin``,
+    which is never on the Hermes daemon PATH. A bare ``command: npx`` MCP server
+    would otherwise fail with ENOENT at execvp.
+    """
+    _assert_resolves_to(
+        tmp_path,
+        tmp_path / "home" / ".fnm" / "node-versions" / "v22.21.1" / "installation" / "bin",
+    )
+
+
+def test_resolve_stdio_command_falls_back_to_volta(tmp_path):
+    """volta shims node/npm/npx directly under ``~/.volta/bin``, outside the
+    Hermes daemon PATH. Cover the third common version manager.
+    """
+    _assert_resolves_to(
+        tmp_path,
+        tmp_path / "home" / ".volta" / "bin",
+    )
