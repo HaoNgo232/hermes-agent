@@ -19,7 +19,7 @@
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
-import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import { findGroup, findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
   $layoutTree,
@@ -269,16 +269,34 @@ export interface SessionTile {
 // "stale runtime after respawn" bugs by construction).
 const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
+const TILE_PANE_PREFIX = 'session-tile:'
 
-type StoredTile = Pick<SessionTile, 'dir' | 'storedSessionId'>
+/** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
+ *  restart / profile swap re-adopts tiles in the same order, not all stacked
+ *  right of workspace. */
+type StoredTile = Pick<SessionTile, 'anchor' | 'before' | 'dir' | 'storedSessionId'>
 
-const toStored = (t: SessionTile): StoredTile => ({ dir: t.dir, storedSessionId: t.storedSessionId })
+const toStored = (t: SessionTile): StoredTile => ({
+  anchor: t.anchor,
+  before: t.before,
+  dir: t.dir,
+  storedSessionId: t.storedSessionId
+})
 
 function parseTileList(value: unknown): StoredTile[] {
   return Array.isArray(value)
     ? value
         .filter((t): t is SessionTile => Boolean(t && typeof (t as SessionTile).storedSessionId === 'string'))
-        .map(toStored)
+        .map(t => {
+          const raw = t as SessionTile
+
+          return {
+            anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
+            before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
+            dir: raw.dir,
+            storedSessionId: raw.storedSessionId
+          }
+        })
     : []
 }
 
@@ -407,6 +425,78 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
 }
 
+/** Rewrite `$sessionTiles` to match layout-tree strip / zone encounter order
+ *  and stamp each tile's `before` so the next adopt restores adjacency. */
+function syncTileStripOrder() {
+  const tree = $layoutTree.get()
+  const tiles = $sessionTiles.get()
+
+  if (!tree || tiles.length === 0) {
+    return
+  }
+
+  const order: string[] = []
+
+  const walk = (node: LayoutNode) => {
+    if (node.type === 'group') {
+      for (const id of node.panes) {
+        if (id.startsWith(TILE_PANE_PREFIX)) {
+          order.push(id.slice(TILE_PANE_PREFIX.length))
+        }
+      }
+
+      return
+    }
+
+    node.children.forEach(walk)
+  }
+
+  walk(tree)
+
+  if (order.length === 0) {
+    return
+  }
+
+  const byId = new Map(tiles.map(t => [t.storedSessionId, t]))
+  const next: SessionTile[] = []
+
+  for (let i = 0; i < order.length; i++) {
+    const id = order[i]
+    const tile = byId.get(id)
+
+    if (!tile) {
+      continue
+    }
+
+    byId.delete(id)
+    const prevInStrip = i > 0 ? `${TILE_PANE_PREFIX}${order[i - 1]}` : 'workspace'
+    next.push({
+      ...tile,
+      before: tile.dir === 'center' ? prevInStrip : tile.before
+    })
+  }
+
+  for (const tile of tiles) {
+    if (byId.has(tile.storedSessionId)) {
+      next.push(tile)
+    }
+  }
+
+  const changed =
+    next.length !== tiles.length ||
+    next.some(
+      (t, i) =>
+        t.storedSessionId !== tiles[i]?.storedSessionId ||
+        t.before !== tiles[i]?.before ||
+        t.anchor !== tiles[i]?.anchor ||
+        t.dir !== tiles[i]?.dir
+    )
+
+  if (changed) {
+    saveTiles(next)
+  }
+}
+
 /** Open a tile for a stored session, or MOVE an existing one to the new dock
  *  (`dir`; `center` = stack into the anchor's zone, `before` = strip slot). The
  *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop
@@ -427,6 +517,8 @@ export function openSessionTile(
 
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
     saveTiles([...tiles, { anchor, before, dir, storedSessionId }])
+    // Adoption is async via the registry — order sync runs after the move path
+    // below; a brand-new tile's strip slot is already in `before`.
 
     return
   }
@@ -438,6 +530,8 @@ export function openSessionTile(
 
   if (target) {
     moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
+    patchSessionTile(storedSessionId, { anchor, before: before ?? undefined, dir })
+    syncTileStripOrder()
   }
 }
 
@@ -532,8 +626,6 @@ export function reopenLastClosedTile(): void {
 // timer / model) reads these instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
 
-const TILE_PANE_PREFIX = 'session-tile:'
-
 /** Stored id of the focused session (the interacted zone's tile, else the
  *  primary's selection). Null on a fresh draft. */
 export const $focusedStoredSessionId = computed(
@@ -568,7 +660,15 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 // titlebar/statusbar readouts for a session switch it had no part in. It also
 // FRONTS the workspace tab: the resumed chat loads in the workspace pane, so a
 // zone parked on a tile tab must switch back or the click looks dead.
-$selectedStoredSessionId.listen(() => {
+//
+// Skip when the selected id is already an open TILE — `focusOpenSession` owns
+// that path and must not be undone by a stray selection write that would yank
+// every stacked tile behind the workspace (A+B "disappear" when switching to C).
+$selectedStoredSessionId.listen(selected => {
+  if (selected && $sessionTiles.get().some(t => t.storedSessionId === selected)) {
+    return
+  }
+
   noteActiveTreeGroup(null)
   revealTreePane('workspace')
 })

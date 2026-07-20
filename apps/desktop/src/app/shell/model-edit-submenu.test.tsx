@@ -20,6 +20,12 @@ import {
 
 import { type FastControl, ModelEditSubmenu } from './model-edit-submenu'
 
+vi.mock('@/hermes', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/hermes')>()
+
+  return { ...actual, setApiRequestProfile: vi.fn() }
+})
+
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
