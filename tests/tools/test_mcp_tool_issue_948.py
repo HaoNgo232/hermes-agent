@@ -236,7 +236,10 @@ def test_resolve_stdio_command_falls_back_to_nvm(tmp_path):
     """
     home = tmp_path / "home"
     home.mkdir()
-    nvm_bin = home / ".nvm" / "versions" / "node" / "v22.21.1" / "bin"
+    # The exact version string is arbitrary — _node_version_manager_dirs()
+    # scans every version under ~/.nvm/versions/node/ dynamically, so this
+    # fixture only needs to model nvm's <runtime>/<version>/bin layout.
+    nvm_bin = home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
     nvm_bin.mkdir(parents=True)
     npx_path = nvm_bin / "npx"
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
