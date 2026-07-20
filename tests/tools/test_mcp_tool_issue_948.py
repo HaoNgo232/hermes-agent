@@ -224,7 +224,9 @@ def test_run_stdio_malware_check_times_out_fail_open():
 def test_resolve_stdio_command_falls_back_to_nvm(tmp_path):
     """When ``npx`` isn't on the filtered PATH and isn't under
     ``$HERMES_HOME/node/bin``, ``~/.local/bin`` or ``/usr/local/bin``, the
-    resolver should still locate it under ``~/.nvm/versions/<version>/bin``.
+    resolver should still locate it under ``~/.nvm/versions/node/<version>/bin``
+    (nvm's real layout — note the ``node`` segment between ``versions`` and the
+    version number).
 
     Node installed via nvm (the most common interactive-dev setup) lives there
     and is never on the Hermes daemon PATH, so a bare ``command: npx`` MCP
@@ -234,7 +236,7 @@ def test_resolve_stdio_command_falls_back_to_nvm(tmp_path):
     """
     home = tmp_path / "home"
     home.mkdir()
-    nvm_bin = home / ".nvm" / "versions" / "v22.21.1" / "bin"
+    nvm_bin = home / ".nvm" / "versions" / "node" / "v22.21.1" / "bin"
     nvm_bin.mkdir(parents=True)
     npx_path = nvm_bin / "npx"
     npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")

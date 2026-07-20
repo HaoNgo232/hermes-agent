@@ -633,18 +633,23 @@ def _node_version_manager_dirs() -> list[str]:
     home = os.path.expanduser("~")
     dirs: list[str] = []
 
-    # nvm: one subdir per installed version.
-    nvm_root = os.path.join(home, ".nvm", "versions")
-    if os.path.isdir(nvm_root):
-        for entry in os.listdir(nvm_root):
-            node_bin = os.path.join(nvm_root, entry, "bin")
-            if os.path.isdir(node_bin):
-                dirs.append(node_bin)
+    # nvm: installs under ~/.nvm/versions/<runtime>/<version>/bin where
+    # <runtime> is normally "node" (and rarely "io.js").
+    nvm_versions = os.path.join(home, ".nvm", "versions")
+    if os.path.isdir(nvm_versions):
+        for runtime in sorted(os.listdir(nvm_versions)):
+            runtime_root = os.path.join(nvm_versions, runtime)
+            if not os.path.isdir(runtime_root):
+                continue
+            for version in sorted(os.listdir(runtime_root)):
+                node_bin = os.path.join(runtime_root, version, "bin")
+                if os.path.isdir(node_bin):
+                    dirs.append(node_bin)
 
     # fnm: <root>/node-versions/<version>/installation/bin
     fnm_root = os.path.join(home, ".fnm", "node-versions")
     if os.path.isdir(fnm_root):
-        for entry in os.listdir(fnm_root):
+        for entry in sorted(os.listdir(fnm_root)):
             node_bin = os.path.join(fnm_root, entry, "installation", "bin")
             if os.path.isdir(node_bin):
                 dirs.append(node_bin)
@@ -693,7 +698,7 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
                 os.path.join(os.sep, "usr", "local", "bin", resolved_command),
                 # Node installed via a version manager (nvm, fnm, volta) is the
                 # common case for interactive dev machines. On these setups
-                # `~/.nvm/versions/*/bin`, `~/.fnm/node-versions/*/installation/bin`
+                # `~/.nvm/versions/node/<version>/bin`, `~/.fnm/node-versions/<version>/installation/bin`
                 # or `~/.volta/bin` hold node/npm/npx, but none of them are on the
                 # Hermes daemon PATH (the daemon does not source shell rc files).
                 # Without these candidates a bare `command: npx` MCP server fails
